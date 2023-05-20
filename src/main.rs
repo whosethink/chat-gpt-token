@@ -61,7 +61,7 @@ fn run_main(config: ApplicationParam) -> anyhow::Result<i32> {
     &get_code(&state, config.username.as_ref().unwrap(), config.password.as_ref().unwrap(), &client)?,
     &client
   )?;
-  println!("Access Token: {}", access);
+  println!("Access Token: {}\n", access);
   println!("Refresh Token: {}", refresh);
   return Ok(0);
 }
