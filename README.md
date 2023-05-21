@@ -62,3 +62,11 @@ scope  : openid profile email model.read model.request organization.read offline
 ```shell
 ./chat-gpt-token --proxy socks5://127.0.0.1:1080 --refresh-token d7bee5010bcdc336374ee64176807fde5213fffb61300
 ```
+
+### 在 [Pandora](https://github.com/pengzhile/pandora) 上使用
+1. 获取令牌, 可以用这个工具获取, 也可以用这个 [谷歌浏览器插件](https://github.com/pengzhile/ChatGPTAuthHelper)
+2. 访问 Pandora, 可以 [代码仓库地址](https://github.com/pengzhile/pandora) 自己部署, 也可以使用这个 [公开服务](https://chat.zhile.io/)
+3. 把令牌贴进去, 就可以和 ChatGPT 交互了, 当然也可以 api 调用
+
+### 什么个原理
+#### [如何通过PKCE获取ChatGPT的AccessToken](https://zhile.io/2023/05/19/how-to-get-chatgpt-access-token-via-pkce.html)
