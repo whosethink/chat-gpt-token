@@ -2,9 +2,8 @@
 
 ### Tool For OpenAi Token
 
-1. use account and password, to get, refresh and parse token of openai
-2. lower quality requirements for request's ip, no rate limit
-3. directly request auth0.openai.com
+1. use account and password, to get or refresh token
+2. lower quality requirements for request's ip
 
 ```text
 Usage: chat-gpt-token [OPTIONS]

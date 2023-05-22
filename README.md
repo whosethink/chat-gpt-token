@@ -2,9 +2,8 @@
 
 ### OpenAi 令牌工具
 
-1. 输入帐号密码, 即可获取, 解析或者刷新令牌
-2. 对调用者的 ip 质量要求低, 没有次数限制
-3. 直接和 auth0.openai.com 交互
+1. 输入帐号密码, 获取或者刷新令牌
+2. 对调用者的 ip 质量要求低
 
 ```text
 Usage: chat-gpt-token [OPTIONS]
