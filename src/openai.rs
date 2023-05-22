@@ -1,7 +1,6 @@
 use std::fmt::{Display, Formatter};
-use std::net::SocketAddr;
 use anyhow::{anyhow, bail};
-use clap::Parser;
+use base64::Engine;
 use chrono::NaiveDateTime;
 use reqwest::header::{HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use reqwest::{Client, Proxy, Url};
@@ -12,19 +11,22 @@ const HEADER_AGENT: &'static str = "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Ge
 const HEADER_REFERER: &'static str = "https://ios.chat.openai.com/";
 const IOS_CLIENT_ID: &'static str = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh";
 
+#[derive(Clone)]
 pub struct OpenAiClient {
   client: Client,
 }
 
 impl OpenAiClient {
-  pub fn create(proxy: Option<Proxy>) -> anyhow::Result<OpenAiClient> {
+  pub fn create(proxy: Option<Proxy>, cookie: bool) -> anyhow::Result<OpenAiClient> {
     let mut headers = HeaderMap::with_capacity(2);
     headers.insert(USER_AGENT, HeaderValue::from_static(HEADER_AGENT));
     headers.insert(REFERER, HeaderValue::from_static(HEADER_REFERER));
     let mut client = Client::builder()
       .default_headers(headers)
-      .cookie_store(true)
       .redirect(Policy::none());
+    if cookie {
+      client = client.cookie_store(true);
+    }
     if let Some(proxy) = proxy {
       client = client.proxy(proxy);
     }
@@ -61,11 +63,11 @@ impl OpenAiClient {
   pub async fn get_code(&self, state: &str, username: &str, password: &str) -> anyhow::Result<String> {
     let _ = self.client.post("https://auth0.openai.com/u/login/identifier")
       .query(&[("state", state)])
-      .form(&PasswordLoginReq01::create(state, username))
+      .form(&OpenAiLoginReq01::create(state, username))
       .send().await
       .map_err(|err| anyhow!("Get Code1 Error: {}", err))?;
     let res2 = self.client.post("https://auth0.openai.com/u/login/password")
-      .json(&PasswordLoginReq02::create(state, username, password))
+      .json(&OpenAiLoginReq02::create(state, username, password))
       .send().await
       .map_err(|err| anyhow!("Get Code2 Error: {}", err))?;
     let location2 = res2.headers().get("location")
@@ -88,8 +90,8 @@ impl OpenAiClient {
     return Ok(code.to_string());
   }
 
-  pub async fn access_token(&self, code: &str) -> anyhow::Result<(String, String)> {
-    let param = AccessTokenReq::create(code);
+  pub async fn access_token(&self, code: &str) -> anyhow::Result<OpenAiAccessRes> {
+    let param = OpenAiAccessReq::create(code);
     let res = self.client.post("https://auth0.openai.com/oauth/token")
       .json(&param)
       .send().await
@@ -97,13 +99,12 @@ impl OpenAiClient {
     if !res.status().is_success() {
       bail!("Access Token Error: {}", res.status());
     }
-    return res.json::<AccessTokenRes>().await
-      .map_err(|err| anyhow!("Access Token Error: {}", err))
-      .map(|r| (r.access_token.clone(), r.refresh_token.clone()));
+    return res.json::<OpenAiAccessRes>().await
+      .map_err(|err| anyhow!("Access Token Error: {}", err));
   }
 
-  pub async fn refresh_token(&self, token: &str) -> anyhow::Result<String> {
-    let param = RefreshTokenReq::create(token);
+  pub async fn refresh_token(&self, token: &str) -> anyhow::Result<OpenAiRefreshRes> {
+    let param = OpenAiRefreshReq::create(token);
     let res = self.client.post("https://auth0.openai.com/oauth/token")
       .json(&param)
       .send().await
@@ -111,81 +112,48 @@ impl OpenAiClient {
     if !res.status().is_success() {
       bail!("Refresh Token Error: {}", res.status());
     }
-    return res.json::<RefreshTokenRes>().await
-      .map_err(|err| anyhow!("Refresh Token Error: {}", err))
-      .map(|r| r.access_token());
+    return res.json::<OpenAiRefreshRes>().await
+      .map_err(|err| anyhow!("Refresh Token Error: {}", err));
   }
 
 }
 
 impl OpenAiClient {
 
-  pub fn parse_token(token_str: &str) -> anyhow::Result<(Option<JwtTokenInfo>, Option<JwtUserInfo>)> {
+  pub fn parse_token(token_str: &str) -> anyhow::Result<OpenAiTokenRes> {
     let segments = token_str.split('.').collect::<Vec<&str>>();
-    let token_info = match segments.get(0) {
-      None => None,
-      Some(&value) => {
-        let value = base64_str_decode(value)
-          .map_err(|_| anyhow!("Parse Token Info Error: {}", value))?;
-        Some(serde_json::from_str::<JwtTokenInfo>(&value)?)
-      }
-    };
-    let user_info = match segments.get(1) {
-      None => None,
-      Some(&value) => {
-        let value = base64_str_decode(value)
-          .map_err(|_| anyhow!("Parse User Info Error: {}", value))?;
-        Some(serde_json::from_str::<JwtUserInfo>(&value)?)
-      }
-    };
-    return Ok((token_info, user_info));
+    if segments.len() < 2 {
+      bail!("Parse Token Error: {}", token_str);
+    }
+    let token_str = segments.get(0).unwrap();
+    let token_info = base64_str_decode(token_str)
+      .map_err(|_| anyhow!("Decode Token Info Error: {}", token_str))
+      .map(|value| serde_json::from_str::<JwtTokenInfo>(&value))
+      .map_err(|_| anyhow!("Parse Token Info Error: {}", token_str))??;
+    let user_str = segments.get(1).unwrap();
+    let user_info = base64_str_decode(user_str)
+      .map_err(|_| anyhow!("Decode User Info Error: {}", user_str))
+      .map(|value| serde_json::from_str::<JwtUserInfo>(&value))
+      .map_err(|_| anyhow!("Parse User Info Error: {}", user_str))??;
+    return Ok(OpenAiTokenRes::create(token_info, user_info));
   }
 }
 
 fn base64_str_decode(base64_str: &str) -> anyhow::Result<String> {
-  let result = base64::decode(base64_str)
+  let result = base64::prelude::BASE64_STANDARD.decode(base64_str)
     .map_err(|_| anyhow!("Base64 Decode Error: {}", base64_str))?;
   return Ok(String::from_utf8(result).map_err(|_| anyhow!("Base64 String Error: {}", base64_str))?);
 }
 
-#[derive(Debug, Parser)]
-#[command(arg_required_else_help = true)]
-pub struct ApplicationParam {
-  #[arg(short = 'u', long = "username", help = "openai username", requires = "password")]
-  pub username: Option<String>,
-
-  #[arg(short = 'p', long = "password", help = "openai password", requires = "username")]
-  pub password: Option<String>,
-
-  #[arg(long = "refresh", help = "refresh new token")]
-  pub refresh: Option<String>,
-
-  #[arg(long = "parse", help = "parse token info")]
-  pub parse: Option<String>,
-
-  #[arg(long = "proxy", help = "socks5://127.0.0.1:8080", value_parser = ApplicationParam::parse_proxy)]
-  pub proxy: Option<Proxy>,
-
-  #[arg(long = "server", help = "start server mode", help = "127.0.0.1:8000")]
-  pub server: Option<SocketAddr>,
-
-}
-
-impl ApplicationParam {
-  fn parse_proxy(proxy: &str) -> anyhow::Result<Proxy> {
-    return Proxy::all(proxy).map_err(|err| anyhow!("Create Proxy Error: {}", err));
-  }
-}
-
 #[derive(Debug, Serialize)]
-struct PasswordLoginReq01<'a> {
+struct OpenAiLoginReq01<'a> {
   state: &'a str,
   username: &'a str,
 }
 
-impl<'a> PasswordLoginReq01<'a> {
-  fn create(state: &'a str, username: &'a str) -> PasswordLoginReq01<'a> {
-    return PasswordLoginReq01 {
+impl<'a> OpenAiLoginReq01<'a> {
+  fn create(state: &'a str, username: &'a str) -> OpenAiLoginReq01<'a> {
+    return OpenAiLoginReq01 {
       state,
       username,
     };
@@ -193,15 +161,15 @@ impl<'a> PasswordLoginReq01<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct PasswordLoginReq02<'a> {
+struct OpenAiLoginReq02<'a> {
   state: &'a str,
   username: &'a str,
   password: &'a str,
 }
 
-impl<'a> PasswordLoginReq02<'a> {
-  fn create(state: &'a str, username: &'a str, password: &'a str) -> PasswordLoginReq02<'a> {
-    return PasswordLoginReq02 {
+impl<'a> OpenAiLoginReq02<'a> {
+  fn create(state: &'a str, username: &'a str, password: &'a str) -> OpenAiLoginReq02<'a> {
+    return OpenAiLoginReq02 {
       state,
       username,
       password,
@@ -210,7 +178,7 @@ impl<'a> PasswordLoginReq02<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct AccessTokenReq<'a> {
+struct OpenAiAccessReq<'a> {
   redirect_uri: &'a str,
   client_id: &'a str,
   grant_type: &'a str,
@@ -218,9 +186,9 @@ struct AccessTokenReq<'a> {
   code_verifier: &'a str,
 }
 
-impl AccessTokenReq<'_> {
-  fn create(code: &str) -> AccessTokenReq {
-    return AccessTokenReq {
+impl OpenAiAccessReq<'_> {
+  fn create(code: &str) -> OpenAiAccessReq {
+    return OpenAiAccessReq {
       redirect_uri: "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback",
       grant_type: "authorization_code",
       client_id: IOS_CLIENT_ID,
@@ -231,16 +199,16 @@ impl AccessTokenReq<'_> {
 }
 
 #[derive(Debug, Deserialize)]
-struct AccessTokenRes {
-  access_token: String,
-  refresh_token: String,
+pub struct OpenAiAccessRes {
+  pub access_token: String,
+  pub refresh_token: String,
   id_token: String,
   scope: String,
   expires_in: u32,
   token_type: String,
 }
 
-impl AccessTokenRes {
+impl OpenAiAccessRes {
   fn access_token(&self) -> String {
     return self.access_token.clone();
   }
@@ -251,15 +219,15 @@ impl AccessTokenRes {
 }
 
 #[derive(Debug, Serialize)]
-struct RefreshTokenReq<'a> {
+struct OpenAiRefreshReq<'a> {
   refresh_token: &'a str,
   client_id: &'a str,
   grant_type: &'a str,
 }
 
-impl RefreshTokenReq<'_> {
-  fn create(token: &str) -> RefreshTokenReq {
-    return RefreshTokenReq {
+impl OpenAiRefreshReq<'_> {
+  fn create(token: &str) -> OpenAiRefreshReq {
+    return OpenAiRefreshReq {
       refresh_token: token,
       client_id: IOS_CLIENT_ID,
       grant_type: "refresh_token",
@@ -268,17 +236,57 @@ impl RefreshTokenReq<'_> {
 }
 
 #[derive(Debug, Deserialize)]
-struct RefreshTokenRes {
-  access_token: String,
+pub struct OpenAiRefreshRes {
+  pub access_token: String,
   id_token: String,
   scope: String,
   expires_in: u32,
   token_type: String,
 }
 
-impl RefreshTokenRes {
+impl OpenAiRefreshRes {
   fn access_token(&self) -> String {
     return self.access_token.clone();
+  }
+}
+
+#[derive(Debug)]
+pub struct OpenAiTokenRes {
+  token: JwtTokenInfo,
+  user: JwtUserInfo
+}
+
+impl OpenAiTokenRes {
+  fn create(token: JwtTokenInfo, user: JwtUserInfo) -> OpenAiTokenRes {
+    return OpenAiTokenRes { token, user };
+  }
+}
+
+impl Display for OpenAiTokenRes {
+  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    writeln!(f, "alg   : {}", self.token.alg)?;
+    writeln!(f, "type  : {}", self.token.typ)?;
+    writeln!(f, "kid   : {}", self.token.kid)?;
+    writeln!(f, "email : {}", self.user.profile.email)?;
+    writeln!(f, "user  : {}", self.user.auth.user)?;
+    writeln!(f, "iss   : {}", self.user.iss)?;
+    writeln!(f, "sub   : {}", self.user.sub)?;
+    writeln!(f, "aud   : {}", self.user.aud.concat())?;
+    let iat_time = NaiveDateTime::from_timestamp_opt(self.user.iat, 0);
+    if let Some(iat) = iat_time {
+      writeln!(f, "iat   : {}", iat)?;
+    }
+    let exp_time = NaiveDateTime::from_timestamp_opt(self.user.exp, 0);
+    if let Some(exp) = exp_time {
+      writeln!(f, "exp   : {}", exp)?;
+    }
+    if let Some(azp) = &self.user.azp {
+      writeln!(f, "azp   : {}", azp)?;
+    }
+    if let Some(scope) = &self.user.scope {
+      writeln!(f, "scope : {}", scope)?;
+    }
+    return Ok(());
   }
 }
 
@@ -287,14 +295,6 @@ pub struct JwtTokenInfo {
   alg: String,
   typ: String,
   kid: String,
-}
-
-impl Display for JwtTokenInfo {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    writeln!(f, "alg   : {}", self.alg)?;
-    writeln!(f, "type  : {}", self.typ)?;
-    return writeln!(f, "kid   : {}", self.kid);
-  }
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,31 +312,6 @@ pub struct JwtUserInfo {
   scope: Option<String>,
 }
 
-impl Display for JwtUserInfo {
-  fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-    writeln!(f, "email : {}", self.profile.email)?;
-    writeln!(f, "user  : {}", self.auth.user_id)?;
-    writeln!(f, "iss   : {}", self.iss)?;
-    writeln!(f, "sub   : {}", self.sub)?;
-    writeln!(f, "aud   : {}", self.aud.concat())?;
-    let iat_time = NaiveDateTime::from_timestamp_opt(self.iat, 0);
-    if let Some(iat) = iat_time {
-      writeln!(f, "iat   : {}", iat)?;
-    }
-    let exp_time = NaiveDateTime::from_timestamp_opt(self.exp, 0);
-    if let Some(exp) = exp_time {
-      writeln!(f, "exp   : {}", exp)?;
-    }
-    if let Some(azp) = &self.azp {
-      writeln!(f, "azp   : {}", azp)?;
-    }
-    if let Some(scope) = &self.scope {
-      writeln!(f, "scope : {}", scope)?;
-    }
-    return Ok(());
-  }
-}
-
 #[derive(Debug, Deserialize)]
 struct JwtProfileInfo {
   email: String,
@@ -346,5 +321,6 @@ struct JwtProfileInfo {
 
 #[derive(Debug, Deserialize)]
 struct JwtAuthInfo {
-  user_id: String,
+  #[serde(rename(deserialize = "user_id"))]
+  user: String,
 }

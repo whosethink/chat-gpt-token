@@ -1,10 +1,14 @@
-mod openai;
+#![allow(dead_code)]
 
-use std::time::Duration;
+mod openai;
+mod server;
+mod common;
+
 use anyhow::anyhow;
 use clap::Parser;
 use tokio::io::AsyncWriteExt;
-use crate::openai::{ApplicationParam, OpenAiClient};
+use crate::common::ApplicationParam;
+use crate::openai::OpenAiClient;
 
 #[tokio::main]
 async fn main() {
@@ -26,31 +30,27 @@ async fn run_main(param: ApplicationParam) -> anyhow::Result<()> {
 }
 
 async fn run_server(param: ApplicationParam) -> anyhow::Result<()> {
-  todo!()
+  warp::serve(server::server(&param))
+    .run(param.server.unwrap())
+    .await;
+  return Ok(());
 }
 
 async fn run_client(param: ApplicationParam) -> anyhow::Result<()> {
   if let Some(token_str) = param.parse.as_ref() {
-    let (token_info, user_info) = OpenAiClient::parse_token(token_str)?;
-    if let Some(token) = token_info {
-      let _ = print_stdout(format!("\n{}", token).as_bytes()).await;
-    }
-    if let Some(user) = user_info {
-      let _ = print_stdout(format!("{}\n", user).as_bytes()).await;
-    }
-    return Ok(());
+    let token = OpenAiClient::parse_token(token_str)?;
+    return print_stdout(format!("\n{}\n", token).as_bytes()).await;
   }
-  let client = OpenAiClient::create(param.proxy.clone())
+  let client = OpenAiClient::create(param.proxy.clone(), true)
     .map_err(|err| anyhow!("Create Client Error: {}", err))?;
   if let Some(refresh_token) = param.refresh.as_ref() {
-    let access = client.refresh_token(refresh_token).await?;
-    return print_stdout(format!("\nAccess Token: {}\n", access).as_bytes()).await;
+    let result = client.refresh_token(refresh_token).await?;
+    return print_stdout(format!("\nAccess Token: {}\n", result.access_token).as_bytes()).await;
   }
   if let (Some(username), Some(password)) = (param.username.as_ref(), param.password.as_ref()) {
     let code = client.get_code(&client.get_state().await?, username, password).await?;
-    let (access, refresh) = client.access_token(&code).await?;
-    let _ = print_stdout(format!("\nAccess Token: {}\n\n", access).as_bytes()).await;
-    return print_stdout(format!("Refresh Token: {}\n", refresh).as_bytes()).await;
+    let result = client.access_token(&code).await?;
+    return print_stdout(format!("\nAccess Token: {}\n\nRefresh Token: {}\n", result.access_token, result.refresh_token).as_bytes()).await;
   }
   return Ok(());
 }
@@ -70,4 +70,3 @@ async fn print_stderr(byte: &[u8]) -> anyhow::Result<()> {
   let _ = stderr.flush().await;
   return Ok(());
 }
-
