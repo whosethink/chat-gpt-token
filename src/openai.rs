@@ -271,7 +271,7 @@ impl Display for OpenAiTokenRes {
     writeln!(f, "user  : {}", self.user.auth.user)?;
     writeln!(f, "iss   : {}", self.user.iss)?;
     writeln!(f, "sub   : {}", self.user.sub)?;
-    writeln!(f, "aud   : {}", self.user.aud.concat())?;
+    writeln!(f, "aud   : {}", self.user.aud.join(" "))?;
     let iat_time = NaiveDateTime::from_timestamp_opt(self.user.iat, 0);
     if let Some(iat) = iat_time {
       writeln!(f, "iat   : {}", iat)?;
